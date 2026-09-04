@@ -1,6 +1,12 @@
 import pytest
 
-from app.sql_steps import UnsupportedQueryError, _extract_base_tables, _parse_select_statement, parse_to_steps
+from app.sql_steps import (
+    UnsupportedQueryError,
+    _extract_base_tables,
+    _parse_select_statement,
+    _preview_table_query,
+    parse_to_steps,
+)
 
 
 def _labels(sql: str) -> list[str]:
@@ -74,6 +80,10 @@ def test_final_step_sql_round_trips_full_query_semantics():
         "WITH t AS (SELECT 1) SELECT * FROM t",
         "SELECT 1",
         "not valid sql at all (((",
+        "SELECT * FROM customers FOR UPDATE",
+        "SELECT * FROM customers FOR SHARE",
+        "SELECT name, ROW_NUMBER() OVER (ORDER BY name) FROM customers",
+        "SELECT name, ROW_NUMBER() OVER w FROM customers WINDOW w AS (ORDER BY name)",
     ],
 )
 def test_unsupported_queries_raise(sql: str):
@@ -142,3 +152,15 @@ def test_highlight_columns_join_where_group_by_having_order_by():
 def test_highlight_columns_empty_for_single_table_no_join():
     highlights = _highlights_by_label("SELECT * FROM customers")
     assert highlights["FROM / JOIN"] == []
+
+
+def test_preview_table_query_quotes_plain_identifier():
+    query = _preview_table_query("customers").as_string(None)
+    assert query == 'SELECT * FROM "customers" LIMIT %s'
+
+
+def test_preview_table_query_escapes_embedded_quote_in_identifier():
+    # テーブル名に二重引用符が含まれていても、SQLとして安全に(引用符を
+    # 2つ並べてエスケープした形で)組み立てられることを確認する
+    query = _preview_table_query('weird"table').as_string(None)
+    assert query == 'SELECT * FROM "weird""table" LIMIT %s'

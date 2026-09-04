@@ -73,17 +73,29 @@ export default function App() {
   // 「実行」を押す前でも、FROM句が指す元テーブルの中身をステップ0として
   // 自動的に取得しておく(入力途中の不完全なSQLでは静かに無視する)。
   useEffect(() => {
+    let cancelled = false;
     const handle = setTimeout(() => {
       fetchSourceTables(sql)
         .then(({ tables, highlightColumns }) => {
+          // sqlがさらに変わった後にレスポンスが届いた場合、古い結果で
+          // 新しい入力の表示を上書きしないようにする
+          if (cancelled) return;
           setSourceTables(tables);
           setSourceHighlight(highlightColumns);
         })
         .catch(() => {
-          // 入力中の不完全なSQLは想定内なのでエラー表示はしない
+          if (cancelled) return;
+          // 入力中の不完全なSQLは想定内なのでエラー表示はしないが、
+          // 直前に表示していた無関係なテーブルが残り続けると誤解を招くため、
+          // 現在のSQLに対する結果としてはクリアする
+          setSourceTables([]);
+          setSourceHighlight([]);
         });
     }, SOURCE_TABLES_DEBOUNCE_MS);
-    return () => clearTimeout(handle);
+    return () => {
+      cancelled = true;
+      clearTimeout(handle);
+    };
   }, [sql]);
 
   const timelineItems = [
@@ -182,6 +194,9 @@ export default function App() {
       </div>
 
       <div className="step-stage" ref={stageRef} style={{ height: stageHeight }}>
+        <span className="visually-hidden" role="status" aria-live="polite">
+          {activeLabel}に切り替わりました
+        </span>
         <AnimatePresence mode="wait" custom={direction} initial={false}>
           {activeIndex === 0 ? (
             <motion.div

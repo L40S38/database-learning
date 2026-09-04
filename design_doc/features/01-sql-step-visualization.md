@@ -131,7 +131,7 @@ GROUP BY / ORDER BY / LIMIT・OFFSET のアニメーションイメージは未�
 | メソッド/パス | 概要 | 主なレスポンスフィールド |
 |---|---|---|
 | `POST /api/query/steps` | SQLを句ごとに分解し、各ステップを実行した結果を返す | `steps[]`: `label`, `description`, `sql`, `columns`, `rows`, `row_count`, `error`, `highlight_columns` |
-| `POST /api/query/source-tables` | FROM句が参照するテーブルの、実行前の生データを返す(ステップ0用) | `tables[]`: `table`, `alias`, `columns`, `rows`, `row_count`, `error`, `highlight_columns` |
+| `POST /api/query/source-tables` | FROM句が参照するテーブルの、実行前の生データを返す(ステップ0用) | `tables[]`: `table`, `alias`, `columns`, `rows`, `row_count`, `error` / トップレベル: `highlight_columns`(全テーブル共通、`tables[]`各要素の中ではない) |
 | `GET /api/health` | ヘルスチェック | `status` |
 
 実装: `backend/app/main.py`

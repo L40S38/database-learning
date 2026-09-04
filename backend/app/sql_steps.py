@@ -16,6 +16,7 @@ from pglast.ast import A_Star, ColumnRef, JoinExpr, RangeVar, ResTarget, SelectS
 from pglast.parser import ParseError
 from pglast.stream import RawStream
 from pglast.visitors import Visitor
+from psycopg.sql import SQL, Composed, Identifier
 
 from .db import get_connection
 
@@ -72,6 +73,31 @@ def _referenced_column_names(node: Any) -> list[str]:
     finder = _ColumnNameFinder()
     finder(node)
     return finder.names
+
+
+class _WindowFunctionDetector(Visitor):
+    """ASTの部分木にウィンドウ関数呼び出し(`OVER`句を伴う関数呼び出し)が
+    含まれるかを調べる。ウィンドウ関数はGROUP BY/HAVINGの後・DISTINCT/ORDER BYの
+    前という独自の評価順序を持つが、現状のステップ分解モデルにはその評価順序が
+    組み込まれていないため、含まれていた場合は明示的に未対応として拒否する
+    (黙って評価順序が崩れたSQLを実行してしまうと、見た目上は結果が返るのに
+    意味が変わってしまうため)。
+    """
+
+    def __init__(self) -> None:
+        self.found = False
+
+    def visit_FuncCall(self, ancestors, node):  # noqa: N802 (pglastの命名規則に合わせる)
+        if node.over is not None:
+            self.found = True
+
+
+def _has_window_function(node: Any) -> bool:
+    if not node:
+        return False
+    detector = _WindowFunctionDetector()
+    detector(node)
+    return detector.found
 
 
 def _star_target_list() -> tuple[ResTarget, ...]:
@@ -202,6 +228,10 @@ def _parse_select_statement(sql: str) -> SelectStmt:
         raise UnsupportedQueryError("VALUES句のみのSELECT文は未対応です")
     if not stmt.fromClause:
         raise UnsupportedQueryError("FROM句のないSELECT文は未対応です")
+    if stmt.lockingClause:
+        raise UnsupportedQueryError("FOR UPDATE/FOR SHAREなどのロック句は未対応です")
+    if stmt.windowClause or _has_window_function(stmt):
+        raise UnsupportedQueryError("ウィンドウ関数(OVER句)は未対応です")
 
     return stmt
 
@@ -237,6 +267,13 @@ def _extract_base_tables(from_clause: tuple) -> list[tuple[str, str | None]]:
     return tables
 
 
+def _preview_table_query(relname: str) -> Composed:
+    """指定したテーブル名を安全にクォートした、ステップ0プレビュー用のSELECT文を
+    組み立てる(テーブル名を生文字列でSQLに埋め込まないようにするため)。
+    """
+    return SQL("SELECT * FROM {} LIMIT %s").format(Identifier(relname))
+
+
 def preview_source_tables(sql: str) -> tuple[list[TablePreview], list[str]]:
     """FROM句が参照している各テーブルの、絞り込み前の生データを取得する。
 
@@ -254,10 +291,10 @@ def preview_source_tables(sql: str) -> tuple[list[TablePreview], list[str]]:
     results: list[TablePreview] = []
     with get_connection() as conn:
         for relname, alias in tables:
-            preview_sql = f'SELECT * FROM "{relname}" LIMIT {MAX_PREVIEW_ROWS}'
+            preview_sql = _preview_table_query(relname)
             try:
                 with conn.cursor() as cur:
-                    cur.execute(preview_sql)
+                    cur.execute(preview_sql, (MAX_PREVIEW_ROWS,))
                     columns = [c.name for c in cur.description]
                     rows = [[_serialize(v) for v in row] for row in cur.fetchall()]
             except psycopg.Error as exc:

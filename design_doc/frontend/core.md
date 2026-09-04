@@ -39,7 +39,7 @@ frontend/
 
 `components/SqlEditor.tsx`。`@uiw/react-codemirror` + `@codemirror/lang-sql`(PostgreSQL方言)+ `@codemirror/theme-one-dark`。アプリ全体のダークトーンに合わせてダークテーマを適用している(2026-08-30、ライトテーマのままで非ハイライト部分が読みづらかった問題を修正)。
 
-**方針**: SQLを表示する箇所(メインの入力欄だけでなく、ステップごとのSQLスニペット表示なども含む)は、すべてこの編集可能なコードコンポーネントで統一する。現状ステップごとのSQLスニペットは読み取り専用の `<pre>` タグで表示しているが、将来的に「ステップ単位でSQLを編集し、そのステップ以降を再計算・再可視化する」機能を見据え、**当面は`readOnly`/`editable={false}`で無効化した同じコンポーネントを使う**ことを標準とする(プレーンテキスト表示は避ける)。詳細は [features/01-sql-step-visualization.md](../features/01-sql-step-visualization.md) を参照。
+**方針**: SQLを表示する箇所(メインの入力欄だけでなく、ステップごとのSQLスニペット表示なども含む)は、すべてこの編集可能なコードコンポーネントで統一する。ステップごとのSQLスニペットも、プレーンテキスト(`<pre>`)ではなく、将来的に「ステップ単位でSQLを編集し、そのステップ以降を再計算・再可視化する」機能を見据え、**当面は`readOnly`/`editable={false}`で無効化した同じコンポーネント**(`SqlEditor`に`readOnly`propを追加)で表示している(2026-08-31実装済み)。詳細は [features/01-sql-step-visualization.md](../features/01-sql-step-visualization.md) を参照。
 
 ### APIクライアント
 

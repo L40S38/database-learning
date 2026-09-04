@@ -1,5 +1,7 @@
 :root {
-  color-scheme: light dark;
+  /* このアプリはダークトーン固定のスタイルしか用意していないため、
+     ブラウザのネイティブUI(フォームコントロール等)もダーク前提で描画させる */
+  color-scheme: dark;
   font-family: system-ui, -apple-system, "Segoe UI", "Hiragino Kaku Gothic ProN", sans-serif;
 }
 
@@ -7,6 +9,18 @@ body {
   margin: 0;
   background: #0f1115;
   color: #e6e6e6;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .app {

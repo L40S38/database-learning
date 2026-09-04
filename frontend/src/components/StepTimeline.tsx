@@ -11,11 +11,14 @@ interface Props {
 
 export default function StepTimeline({ items, activeIndex, onSelect }: Props) {
   return (
-    <div className="step-timeline">
+    <div className="step-timeline" role="tablist" aria-label="ステップ選択">
       {items.map((item, index) => (
         <button
           key={`${item.label}-${index}`}
           type="button"
+          role="tab"
+          aria-selected={index === activeIndex}
+          aria-current={index === activeIndex ? "step" : undefined}
           className={
             "step-timeline-item" +
             (index === activeIndex ? " active" : "") +

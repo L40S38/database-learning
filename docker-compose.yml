@@ -1,0 +1,39 @@
+services:
+  db:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: sqlviz
+      POSTGRES_PASSWORD: sqlviz
+      POSTGRES_DB: sqlviz
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./db/seed.sql:/docker-entrypoint-initdb.d/seed.sql:ro
+      - db_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sqlviz"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql://sqlviz:sqlviz@db:5432/sqlviz
+    ports:
+      - "8001:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    environment:
+      VITE_API_BASE_URL: http://localhost:8001
+    ports:
+      - "5174:5173"
+    depends_on:
+      - backend
+
+volumes:
+  db_data:

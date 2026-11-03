@@ -2,7 +2,7 @@
 
 親: [../README.md](../README.md)
 ステータス: 未着手
-最終更新: 2026-08-31
+最終更新: 2026-11-03
 
 ## 関連コア仕様
 
@@ -36,5 +36,5 @@ L(新規のセッション管理・状態管理が必要。[01-sql-step-visualiz
 
 ## 前提
 
-- **[01-sql-step-visualization.md](01-sql-step-visualization.md) の Phase B(INSERT/UPDATE/DELETE対応)は最低限必須**。ロック・トランザクションの挙動は書き込み(INSERT/UPDATE/DELETE)を伴って初めて意味のある可視化になる(例: 「セッションAがある行をUPDATEし、セッションBが同じ行をUPDATEしようとしてブロックされる」)。現状のMVPはSELECT文の分解・実行しかできないため、そのままではこの機能で見せたいシナリオを1つも構成できない。着手前に01のPhase Bを完了させておくこと。
+- **[01-sql-step-visualization.md](01-sql-step-visualization.md) の Phase B(INSERT/UPDATE/DELETE対応)は最低限必須**。ロック・トランザクションの挙動は書き込み(INSERT/UPDATE/DELETE)を伴って初めて意味のある可視化になる(例: 「セッションAがある行をUPDATEし、セッションBが同じ行をUPDATEしようとしてブロックされる」)。SELECT文の分解・実行しかできない状態のままでは、この機能で見せたいシナリオを1つも構成できない。着手前に01のPhase Bを完了させておくこと。→ **2026-11-03にPhase B実装済み(前提クリア)**。ただし01のDML実行は「1リクエスト内で実行して即ROLLBACK」する方式であり、複数セッションにまたがってトランザクションを開いたままにする仕組みはこの機能で新たに作る必要がある。
 - 公開ホスティングを見据えるなら、[backend/core.md のサンドボックス化](../backend/core.md#オープン課題-公開ホスティングに向けたサンドボックス化)(セッション分離)を先に固める方が手戻りが少ない。

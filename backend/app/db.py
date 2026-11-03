@@ -14,8 +14,12 @@ STATEMENT_TIMEOUT_MS = 5000
 
 
 def get_connection() -> psycopg.Connection:
-    """読み取り専用・タイムアウト付きの新規接続を返す"""
-    conn = psycopg.connect(DATABASE_URL)
+    """読み取り専用・タイムアウト付きの新規接続を返す。
+
+    statement_timeoutは接続オプションとしてセッション開始時に設定する
+    (トランザクション内で `SET` すると、エラー時やDML実行後のROLLBACKで
+    設定ごと取り消されてしまうため)。
+    """
+    conn = psycopg.connect(DATABASE_URL, options=f"-c statement_timeout={STATEMENT_TIMEOUT_MS}")
     conn.read_only = True
-    conn.execute(f"SET statement_timeout = {STATEMENT_TIMEOUT_MS}")
     return conn

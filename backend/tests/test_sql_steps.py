@@ -3,8 +3,10 @@ import pytest
 from app.sql_steps import (
     UnsupportedQueryError,
     _cte_names,
+    _dml_sources,
     _extract_from_sources,
-    _parse_select_statement,
+    _parse_statement,
+    _plan_steps,
     _preview_table_query,
     parse_to_steps,
 )
@@ -80,8 +82,14 @@ def test_final_step_sql_round_trips_full_query_semantics():
 @pytest.mark.parametrize(
     "sql",
     [
-        "INSERT INTO customers (name) VALUES ('x')",
         "SELECT 1",
+        "SELECT * FROM customers; SELECT * FROM orders",
+        "CREATE TABLE t (id int)",
+        "MERGE INTO customers c USING orders o ON o.customer_id = c.customer_id WHEN MATCHED THEN DELETE",
+        "WITH gone AS (DELETE FROM orders RETURNING *) SELECT * FROM gone",
+        "WITH tokyo AS (SELECT customer_id FROM customers) UPDATE orders SET status = 'x'",
+        "UPDATE customers SET name = 'x' WHERE CURRENT OF cur",
+        "DELETE FROM customers WHERE CURRENT OF cur",
         "not valid sql at all (((",
         "SELECT * FROM customers FOR UPDATE",
         "SELECT * FROM customers FOR SHARE",
@@ -96,7 +104,7 @@ def test_unsupported_queries_raise(sql: str):
 
 
 def _from_sources(sql: str) -> list[tuple[str, str | None, str | None]]:
-    stmt = _parse_select_statement(sql)
+    stmt = _parse_statement(sql)
     sources = _extract_from_sources(stmt.fromClause, _cte_names(stmt))
     return [(s.kind, s.relname, s.alias) for s in sources]
 
@@ -349,3 +357,171 @@ def test_union_with_cte_propagates_with_clause_to_arms():
     sqls = _sql_by_label(sql)
     assert sqls["1つ目のSELECT"].upper().startswith("WITH")
     assert sqls["2つ目のSELECT"].upper().startswith("WITH")
+
+
+# --- DML(INSERT / UPDATE / DELETE) -----------------------------------------
+
+
+def _dml_sql_by_label(sql: str, primary_key: tuple[str, ...] = ()) -> dict[str, str]:
+    return {label: s for label, _desc, s, _hl in parse_to_steps(sql, primary_key)}
+
+
+def test_update_steps_target_where_set_after():
+    sql = "UPDATE products SET price = price * 2 WHERE category = '食品'"
+    assert _labels(sql) == ["対象テーブル", "WHERE", "SET", "実行後のテーブル"]
+
+
+def test_update_without_where_has_no_where_step():
+    assert _labels("UPDATE products SET price = 0") == ["対象テーブル", "SET", "実行後のテーブル"]
+
+
+def test_update_with_returning_adds_returning_step_before_after_state():
+    sql = "UPDATE products SET price = 0 WHERE product_id = 1 RETURNING product_id, price"
+    assert _labels(sql) == ["対象テーブル", "WHERE", "SET", "RETURNING", "実行後のテーブル"]
+
+
+def test_update_with_from_labels_target_step_and_joins_target_with_from_tables():
+    sql = """
+        UPDATE orders o SET status = 'キャンセル'
+        FROM customers c
+        WHERE o.customer_id = c.customer_id AND c.prefecture = '大阪府'
+    """
+    sqls = _sql_by_label(sql)
+    assert "対象テーブル + FROM" in sqls
+    assert sqls["対象テーブル + FROM"] == "SELECT * FROM orders AS o, customers AS c"
+    assert sqls["WHERE"].startswith("SELECT * FROM orders AS o, customers AS c WHERE")
+
+
+def test_update_highlights_where_columns_and_set_columns():
+    sql = """
+        UPDATE customers c SET prefecture = '神奈川県', (name, created_at) = ('x', '2024-01-01')
+        WHERE c.customer_id = 3
+    """
+    highlights = _highlights_by_label(sql)
+    assert highlights["WHERE"] == ["customer_id"]
+    assert highlights["SET"] == ["prefecture", "name", "created_at"]
+    assert highlights["実行後のテーブル"] == ["prefecture", "name", "created_at"]
+
+
+def test_update_set_step_returns_updated_rows_of_target_table_only():
+    sqls = _sql_by_label("UPDATE customers c SET name = 'x' WHERE c.customer_id = 1 RETURNING c.name")
+    assert sqls["SET"] == "UPDATE customers AS c SET name = 'x' WHERE c.customer_id = 1 RETURNING c.*"
+    sqls = _sql_by_label("UPDATE customers SET name = 'x'")
+    assert sqls["SET"].endswith("RETURNING customers.*")
+
+
+def test_after_state_runs_dml_without_returning_then_selects_whole_table_in_primary_key_order():
+    sql = "UPDATE customers c SET name = 'x' WHERE c.customer_id = 1 RETURNING c.name"
+    sqls = _dml_sql_by_label(sql, primary_key=("customer_id",))
+    assert sqls["実行後のテーブル"] == (
+        "UPDATE customers AS c SET name = 'x' WHERE c.customer_id = 1;\n"
+        "SELECT * FROM customers ORDER BY customer_id"
+    )
+
+
+def test_after_state_is_unordered_without_primary_key():
+    sqls = _dml_sql_by_label("DELETE FROM customers")
+    assert sqls["実行後のテーブル"].endswith("SELECT * FROM customers")
+
+
+def test_dml_execution_puts_target_star_before_original_returning():
+    stmt = _parse_statement("UPDATE customers c SET name = 'x' RETURNING c.name, now()")
+    _steps, execution = _plan_steps(stmt, ("customer_id",))
+    assert execution.dml_sql == "UPDATE customers AS c SET name = 'x' RETURNING c.*, c.name, now()"
+    assert execution.after_sql == "SELECT * FROM customers ORDER BY customer_id"
+
+
+def test_select_has_no_dml_execution():
+    _steps, execution = _plan_steps(_parse_statement("SELECT * FROM customers"))
+    assert execution is None
+
+
+def test_dml_steps_after_the_first_dml_step_reuse_a_single_execution():
+    stmt = _parse_statement("UPDATE products SET price = 0 WHERE product_id = 1 RETURNING price")
+    steps, _execution = _plan_steps(stmt)
+    assert [s.source for s in steps] == ["query", "query", "affected", "returning", "after"]
+
+
+def test_delete_steps_target_where_after():
+    assert _labels("DELETE FROM orders WHERE status = 'キャンセル'") == [
+        "対象テーブル", "WHERE", "実行後のテーブル",
+    ]
+
+
+def test_delete_with_using_and_returning():
+    sql = """
+        DELETE FROM order_items oi
+        USING orders o
+        WHERE oi.order_id = o.order_id AND o.status = 'キャンセル'
+        RETURNING oi.*
+    """
+    assert _labels(sql) == ["対象テーブル + USING", "WHERE", "RETURNING", "実行後のテーブル"]
+    highlights = _highlights_by_label(sql)
+    assert highlights["WHERE"] == ["order_id", "status"]
+    assert highlights["実行後のテーブル"] == []
+
+
+def test_insert_values_steps_and_rows_preview_uses_target_column_names():
+    sql = "INSERT INTO customers (name, prefecture, created_at) VALUES ('a', '東京都', '2024-07-01')"
+    assert _labels(sql) == ["挿入する行(VALUES)", "INSERT", "実行後のテーブル"]
+    sqls = _sql_by_label(sql)
+    assert sqls["挿入する行(VALUES)"] == (
+        "SELECT * FROM ((VALUES ('a', '東京都', '2024-07-01'))) AS new_rows (name, prefecture, created_at)"
+    )
+    assert sqls["INSERT"].endswith("RETURNING customers.*")
+    assert _highlights_by_label(sql)["INSERT"] == ["name", "prefecture", "created_at"]
+
+
+def test_insert_select_rows_step():
+    sql = "INSERT INTO customers (name, prefecture, created_at) SELECT name, prefecture, created_at FROM customers"
+    assert _labels(sql)[0] == "挿入する行(SELECT)"
+
+
+def test_insert_values_containing_default_skips_rows_preview_step():
+    sql = "INSERT INTO customers (name, prefecture, created_at) VALUES ('a', '東京都', DEFAULT)"
+    assert _labels(sql) == ["INSERT", "実行後のテーブル"]
+
+
+def test_insert_default_values_has_no_rows_preview_step():
+    assert _labels("INSERT INTO customers DEFAULT VALUES") == ["INSERT", "実行後のテーブル"]
+
+
+def test_insert_on_conflict_labels_and_highlights():
+    do_nothing = "INSERT INTO customers (customer_id, name) VALUES (1, 'a') ON CONFLICT (customer_id) DO NOTHING"
+    assert "INSERT ... ON CONFLICT DO NOTHING" in _labels(do_nothing)
+    assert _highlights_by_label(do_nothing)["INSERT ... ON CONFLICT DO NOTHING"] == ["customer_id"]
+
+    do_update = """
+        INSERT INTO customers (customer_id, name) VALUES (1, 'a')
+        ON CONFLICT (customer_id) DO UPDATE SET name = EXCLUDED.name
+        RETURNING customer_id
+    """
+    assert _labels(do_update) == [
+        "挿入する行(VALUES)", "INSERT ... ON CONFLICT DO UPDATE", "RETURNING", "実行後のテーブル",
+    ]
+    assert _highlights_by_label(do_update)["INSERT ... ON CONFLICT DO UPDATE"] == ["customer_id", "name"]
+
+
+def _dml_source_list(sql: str) -> tuple[list[tuple[str, str | None, str | None]], list[str]]:
+    sources, highlight, _with = _dml_sources(_parse_statement(sql))
+    return [(s.kind, s.relname, s.alias) for s in sources], highlight
+
+
+def test_dml_sources_list_target_table_first():
+    assert _dml_source_list("UPDATE customers c SET name = 'x'") == ([("table", "customers", "c")], [])
+    assert _dml_source_list(
+        "UPDATE orders o SET status = 'x' FROM customers c JOIN order_items oi ON oi.order_id = c.customer_id"
+    ) == (
+        [("table", "orders", "o"), ("table", "customers", "c"), ("table", "order_items", "oi")],
+        ["order_id", "customer_id"],
+    )
+    assert _dml_source_list("DELETE FROM order_items USING orders WHERE true")[0] == [
+        ("table", "order_items", None), ("table", "orders", None),
+    ]
+
+
+def test_insert_sources_include_tables_of_select_but_not_values():
+    assert _dml_source_list("INSERT INTO customers (name) VALUES ('a')")[0] == [("table", "customers", None)]
+    assert _dml_source_list("INSERT INTO customers (name) SELECT name FROM customers c WHERE false")[0] == [
+        ("table", "customers", None), ("table", "customers", "c"),
+    ]

@@ -30,6 +30,18 @@ const SAMPLE_QUERIES: { title: string; sql: string }[] = [
     title: "UNION",
     sql: "SELECT name, prefecture FROM customers WHERE prefecture = '東京都'\nUNION\nSELECT name, prefecture FROM customers WHERE prefecture = '大阪府'\nORDER BY name;",
   },
+  {
+    title: "UPDATE",
+    sql: "UPDATE products\nSET price = price * 1.1\nWHERE category = '食品'\nRETURNING product_id, name, price;",
+  },
+  {
+    title: "DELETE",
+    sql: "DELETE FROM order_items\nWHERE order_id IN (SELECT order_id FROM orders WHERE status = 'キャンセル')\nRETURNING *;",
+  },
+  {
+    title: "INSERT",
+    sql: "INSERT INTO customers (name, prefecture, created_at)\nVALUES\n  ('山田一郎', '神奈川県', '2024-07-01'),\n  ('中村さくら', '東京都', '2024-07-02')\nRETURNING customer_id, name;",
+  },
 ];
 
 const SOURCE_TABLES_DEBOUNCE_MS = 500;
@@ -86,7 +98,7 @@ export default function App() {
   }
   const direction = directionRef.current;
 
-  // 「実行」を押す前でも、FROM句が指す元テーブルの中身をステップ0として
+  // 「実行」を押す前でも、SQLが参照する元テーブルの中身をステップ0として
   // 自動的に取得しておく(入力途中の不完全なSQLでは静かに無視する)。
   useEffect(() => {
     let cancelled = false;
@@ -228,7 +240,7 @@ export default function App() {
               <div className="step-big-card-left">
                 <h2>0. 実行前(元テーブル)</h2>
                 <p className="step-description">
-                  FROM句が参照しているテーブルの、絞り込み・結合される前の中身です。「実行」を押すと、この状態からどう変化するかを1番以降で確認できます。
+                  SQLが参照しているテーブル(SELECTではFROM句のテーブル、INSERT/UPDATE/DELETEでは対象テーブルなど)の、絞り込み・結合・更新される前の中身です。「実行」を押すと、この状態からどう変化するかを1番以降で確認できます。
                 </p>
                 {sourceTables.length === 0 && <p className="step-empty">SQLを入力すると表示されます</p>}
                 {sourceTables.length > 0 && (

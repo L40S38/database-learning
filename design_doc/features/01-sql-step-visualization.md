@@ -1,8 +1,8 @@
 # Feature: SQL文法可視化(データ変化ステップ表示)
 
 親: [../README.md](../README.md)
-ステータス: **MVP実装済み**。左右2カラムのスクロールテリングレイアウトへの変更を実装済み(3節参照)。SQL構文カバレッジPhase A(CTE・サブクエリ・ウィンドウ関数・UNION系)も実装済み(5節参照)。モバイル/狭幅時のフォールバックのみ未着手
-最終更新: 2026-09-05
+ステータス: **MVP実装済み**。左右2カラムのスクロールテリングレイアウトへの変更を実装済み(3節参照)。SQL構文カバレッジPhase A(CTE・サブクエリ・ウィンドウ関数・UNION系)・Phase B(INSERT/UPDATE/DELETE)も実装済み(5節参照)。モバイル/狭幅時のフォールバックのみ未着手
+最終更新: 2026-11-03
 
 ## 関連コア仕様
 
@@ -22,12 +22,12 @@
 - [ ] モバイル/狭幅時のフォールバックレイアウト(3節、未実装)
 - [x] ステップごとのSQLスニペット表示を、編集可能コンポーネント(disabled)に置き換え(3節)
 - [ ] ステップ単位でのSQL編集→再計算・再可視化の有効化(上記のさらに先。今回は disabled のコンポーネントを置くところまで)
-- [ ] SQL構文カバレッジの拡大(5節のロードマップ参照)
+- [ ] SQL構文カバレッジの拡大(5節のロードマップ参照。Phase A・Bは実装済み、Phase Cが未着手)
 - [ ] ユーザー自身のDB/スキーマ接続対応
 
 ## 1. 概要
 
-独自の実行エンジンを実装するのではなく、SQLを句の境界ごとに分解した「そのステップまでのSQL」を組み立てて、**本物のPostgreSQLに実際に投げて**結果を取得する方式。入力したSELECT文を、論理的な実行順序ごとに分解し、各ステップまでの中間結果テーブルを表示する。
+独自の実行エンジンを実装するのではなく、SQLを句の境界ごとに分解した「そのステップまでのSQL」を組み立てて、**本物のPostgreSQLに実際に投げて**結果を取得する方式。入力したSELECT文を、論理的な実行順序ごとに分解し、各ステップまでの中間結果テーブルを表示する(INSERT/UPDATE/DELETE文の分解は[5節 Phase B](#phase-b-dml文insertupdatedeleteへの対応-2026-11-03実装済み)を参照)。
 
 実行順序: `FROM/JOIN → WHERE → GROUP BY → HAVING → SELECT[DISTINCT] → ORDER BY → LIMIT/OFFSET`。元クエリに存在しない句のステップは表示しない。
 
@@ -40,9 +40,9 @@
 
 ### (b) ステップ0「実行前(元テーブル)」
 
-FROM句が参照する実テーブルを再帰的に特定し(自己結合・多段JOINにも対応)、JOIN・絞り込みが行われる前の生データを表示する。**「実行」ボタンを押す前から**、SQL入力に対して自動(デバウンス500ms)で表示される。
+FROM句が参照する実テーブルを再帰的に特定し(自己結合・多段JOINにも対応)、JOIN・絞り込みが行われる前の生データを表示する。**「実行」ボタンを押す前から**、SQL入力に対して自動(デバウンス500ms)で表示される。INSERT/UPDATE/DELETE文では、対象テーブルを先頭に、FROM/USING句・INSERTのSELECT文が参照するテーブルを続けて表示する(5節Phase B)。
 
-- 実装: `backend/app/sql_steps.py` の `_extract_base_tables` / `preview_source_tables`
+- 実装: `backend/app/sql_steps.py` の `_extract_from_sources` / `_dml_sources` / `preview_source_tables`
 
 ### (c) カラムハイライト
 
@@ -155,6 +155,9 @@ GROUP BY / ORDER BY / LIMIT・OFFSET のアニメーションイメージは未�
 - [x] サブクエリ(スカラサブクエリ・`IN`/`EXISTS`・FROM句内の派生テーブル・相関サブクエリ)
 - [x] ウィンドウ関数(インラインの`OVER (...)`)
 - [x] UNION / INTERSECT / EXCEPT(2項)
+- [x] UPDATE(`FROM`句・`RETURNING`句を含む)
+- [x] DELETE(`USING`句・`RETURNING`句を含む)
+- [x] INSERT(`VALUES`・`SELECT`・`DEFAULT VALUES`・`ON CONFLICT`・`RETURNING`句を含む)
 
 ### Phase A: SELECT文の拡充 【2026-09-05実装済み】
 
@@ -167,17 +170,43 @@ GROUP BY / ORDER BY / LIMIT・OFFSET のアニメーションイメージは未�
 
 **実装メモ(2026-09-05)**: CTE本体・UNIONの各枝・FROM句内の派生テーブルは、いずれも「それ自体をさらに句ごとに分解する」のではなく「計算済みの1つの結果」を返す1ステップとして扱う設計にした。この可視化の粒度は常に「トップレベルの1つのSELECT文」を単位とする、という一貫した方針。フロントエンドは既存のステップ配列を汎用的にレンダリングする作りだったため、これらの新しいステップ種別(WITH `<name>`・WINDOW・1つ目/2つ目のSELECT・UNION等)を追加しても`frontend/`側の変更は不要だった。
 
-### Phase B: DML文(INSERT/UPDATE/DELETE)への対応
+### Phase B: DML文(INSERT/UPDATE/DELETE)への対応 【2026-11-03実装済み】
 
 SELECTの「句ごとの分解」モデルはそのまま使えず、文ごとに別の分解モデルが必要。
 
-- [ ] UPDATE文: `FROM/JOIN → WHERE → SET → RETURNING` のようなステップ分解
-- [ ] DELETE文: `FROM/JOIN → WHERE → RETURNING` のようなステップ分解
-- [ ] INSERT文: 対象列 → `VALUES`/サブクエリ → `ON CONFLICT` → `RETURNING`
+- [x] UPDATE文: `対象テーブル(+ FROM) → WHERE → SET → RETURNING → 実行後のテーブル`
+- [x] DELETE文: `対象テーブル(+ USING) → WHERE → RETURNING → 実行後のテーブル`
+- [x] INSERT文: `挿入する行(VALUES/SELECT) → INSERT(ON CONFLICT) → RETURNING → 実行後のテーブル`
 
-`RETURNING`句の可視化は、既存の「実行前(元テーブル)」(2-(b))で作った「実行前後の状態を並べて見せる」考え方とそのまま相性が良い。
+元クエリに存在しない句(WHERE・RETURNING等)のステップは表示しない。ステップ0「実行前」(2-(b))と最後の「実行後のテーブル」が対になり、実行前後の状態を並べて見せる。
 
-> **重要**: [features/04-transaction-lock-stepper.md](04-transaction-lock-stepper.md)(トランザクション/ロックのstep-by-step可視化)に着手する場合、このPhase Bは最低限完了させておく必要がある。ロック・トランザクションの挙動は書き込み(INSERT/UPDATE/DELETE)を伴って初めて意味のある可視化になるため、SELECT文しか扱えない現状のままでは04のシナリオを構成できない。
+**実行方式**: DML文はSELECTで挙動を模倣するのではなく、**本物のPostgreSQLで実際に実行し、必ずROLLBACKする**(実際のデータは変更されない)。これにより、DEFAULT・SERIALの採番・`ON CONFLICT`・外部キー制約違反などのエラーを含め、実際の挙動をそのまま見せられる(1節の基本方針と同じ)。
+
+- 対象行の絞り込みまで(対象テーブル・WHERE・挿入する行)は、SELECT文に組み立て直して読み取り専用で実行する。
+- それ以降(SET/INSERT・RETURNING・実行後のテーブル)は、**DML文を1リクエストにつき1回だけ実行**した結果から切り出す。ステップごとに実行し直すと、ROLLBACKしても戻らないSERIALの採番がステップ間で食い違う(INSERTステップでは7番、実行後のテーブルでは8番になる等)ため。実際に投げるのは、元のRETURNING句の前に「対象テーブル.*」を足した1文で、その出力を対象テーブルの列数で「挿入・更新された行」と「元のRETURNING句の出力」に切り分ける。そのあと同じトランザクション内で対象テーブル全体をSELECTし、最後にROLLBACKする。
+- 「実行後のテーブル」は主キー順に並べる。並べないと、UPDATEした行が(新しい行バージョンとして書き込まれるため)テーブルの末尾に移動して見え、実行前と見比べにくい。主キーはカタログ(`pg_index`)から取得し、主キーがない場合は並べ替えない。
+- 各ステップのSQL表示は、「そのSQLを実行するとこの結果になる」ものにしている。SET/INSERTステップは`... RETURNING <対象テーブル>.*`、実行後のテーブルは`<DML文>;` と `SELECT * FROM <対象テーブル> ORDER BY <主キー>` の2文。
+
+**各ステップの詳細**:
+- UPDATEの「SET」ステップは更新後の値を表示し、SET句の列をハイライトする(実行後のテーブルでも同じ列をハイライト)。直前のWHEREステップが更新前の値なので、行き来すると変化がわかる。
+- `FROM`/`USING`句を伴う場合、「対象テーブル + FROM/USING」ステップは対象テーブルとの直積になる(結合条件はWHERE句で指定するというPostgreSQLの仕様どおり)。
+- INSERTの「挿入する行」ステップは、`VALUES`/`SELECT`を `SELECT * FROM (...) AS new_rows (<挿入先の列名>)` として単独実行し、挿入先の列名を付けて見せる。`VALUES`に`DEFAULT`キーワードを含む場合はINSERTの文脈でしか評価できないため、このステップを省く(次のINSERTステップで、既定値が入った実際の行を見せる)。`DEFAULT VALUES`の場合も省く。
+- `ON CONFLICT`はINSERTステップのラベル(`INSERT ... ON CONFLICT DO NOTHING`/`DO UPDATE`)と説明で表し、衝突判定の列(とDO UPDATEのSET句の列)をハイライトする。衝突した行を別ステップで見せることはしていない(下記の今後の課題)。
+
+**未対応(明示的にエラー)**: DML文のWITH句(`WITH ... UPDATE`等)、SELECT文のWITH句の中のDML(`WITH x AS (DELETE ...) SELECT`)、`WHERE CURRENT OF`(カーソル)、`MERGE`文。
+
+**実装メモ(2026-11-03)**:
+- SERIALの採番(シーケンス)はROLLBACKしても戻らないため、INSERTを試すたびに採番される値が進む(PostgreSQLの仕様)。INSERTステップの説明文にも明記している。
+- 同じ理由でトランザクションを何度もROLLBACKするようになったため、`statement_timeout`の設定方法を変更した。以前はトランザクション内の`SET`で設定しており、ROLLBACKで設定ごと取り消されていた([backend/core.md 実行時の安全策](../backend/core.md#実行時の安全策)参照)。
+- フロントエンドは今回もステップ配列を汎用的にレンダリングするだけで済んだ。変更はサンプルクエリ(UPDATE/DELETE/INSERT)の追加と、ステップ0の説明文の一般化のみ。
+- 実装: `backend/app/sql_steps.py` の `_build_dml_steps`(`_build_update_steps`/`_build_delete_steps`/`_build_insert_steps`)・`_run_dml`・`execute_steps`
+
+**今後の課題**:
+- [ ] `ON CONFLICT`で衝突した既存の行を、別ステップとして見せる
+- [ ] UPDATEのSETステップで、更新前と更新後の値を同じ行に並べて見せる(PostgreSQL 18の`RETURNING old.*, new.*`が使える)
+- [ ] DML文のWITH句
+
+> **重要**: [features/04-transaction-lock-stepper.md](04-transaction-lock-stepper.md)(トランザクション/ロックのstep-by-step可視化)に着手するには、このPhase Bが前提だった(ロック・トランザクションの挙動は書き込みを伴って初めて意味のある可視化になるため)。2026-11-03にこの前提は満たした。
 
 ### Phase C: DDL・その他(優先度低)
 
@@ -193,5 +222,13 @@ SELECTの「句ごとの分解」モデルはそのまま使えず、文ごと�
 
 ## 6. テスト・検証
 
-- バックエンド単体テスト: `backend/tests/test_sql_steps.py`(pytest、43件、DB接続不要)。句分解・列名抽出・ハイライト抽出のロジックに加え、CTE・サブクエリ・ウィンドウ関数・UNION系(5節Phase A)のステップ分解・SQL組み立て・ハイライトも検証(2026-09-05追加、26件)。
+- バックエンド単体テスト: `backend/tests/test_sql_steps.py`(pytest、69件、DB接続不要)。句分解・列名抽出・ハイライト抽出のロジックに加え、CTE・サブクエリ・ウィンドウ関数・UNION系(5節Phase A)のステップ分解・SQL組み立て・ハイライトも検証(2026-09-05追加、26件)。DML(5節Phase B)のステップ分解・SQL組み立て・ハイライト・ステップ0の対象テーブル抽出・未対応エラーも検証(2026-11-03追加、26件)。
 - 手動/自動での動作確認: Docker Compose起動 + Playwrightでのブラウザ操作(サンプルクエリ実行、ステップ遷移、コンソールエラーなし)を都度実施。5節Phase Aの各構文(CTE・サブクエリ・ウィンドウ関数・UNION/INTERSECT/EXCEPT・エラーケースとして再帰CTE/3項UNION)は、2026-09-05にDocker Compose上の実PostgreSQLに対してAPI経由で動作確認済み。
+- 5節Phase B(2026-11-03): Docker Compose上の実PostgreSQL 18で、次の各パターンをAPI経由で動作確認した。
+  - UPDATE(`FROM`句・`RETURNING old/new`含む)・DELETE・INSERT(`VALUES`・`SELECT`・`ON CONFLICT DO NOTHING/DO UPDATE`)
+  - エラーケース(外部キー制約違反・NOT NULL違反・存在しないテーブル・MERGE)
+  - DML実行後のタイムアウト維持(ROLLBACK後も`statement_timeout`が効くこと)
+  - 全サンプルクエリ9件
+  - 実行前後で全テーブルの内容が変わっていないこと
+  
+  ブラウザでの表示確認は未実施。

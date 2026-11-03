@@ -1,6 +1,6 @@
 # SQL/DB学習アプリ 設計ドキュメント
 
-最終更新: 2026-08-31
+最終更新: 2026-11-03
 
 ## この repo について
 
@@ -20,7 +20,7 @@ design_doc/
 ├── backend/
 │   └── core.md         バックエンドの中核仕様(技術スタック・DB実行方針・データモデル・オープン課題)
 └── features/            機能ごとの仕様書
-    ├── 01-sql-step-visualization.md    SQL文法可視化(データ変化ステップ表示) — MVP実装済み
+    ├── 01-sql-step-visualization.md    SQL文法可視化(データ変化ステップ表示) — MVP・構文カバレッジPhase A実装済み
     ├── 02-execution-order-diagram.md   実行順序の可視化(図解) — 未着手
     ├── 03-ast-tree-view.md             構文ツリー/AST表示 — 未着手
     ├── 04-transaction-lock-stepper.md  トランザクション/ロックのstep-by-step可視化 — 未着手
@@ -34,7 +34,7 @@ design_doc/
 
 | # | 機能 | ステータス | 仕様書 |
 |---|---|---|---|
-| 1 | SQLの文法・構造の可視化 | **MVP実装済み**(データ変化ステップ表示)。表示レイアウトの変更を計画中 | [features/01-sql-step-visualization.md](features/01-sql-step-visualization.md) |
+| 1 | SQLの文法・構造の可視化 | **MVP実装済み**(データ変化ステップ表示)。左右2分割カードの入れ替えレイアウト、SQL構文カバレッジPhase A(CTE・サブクエリ・ウィンドウ関数・UNION系)も実装済み | [features/01-sql-step-visualization.md](features/01-sql-step-visualization.md) |
 | 1' | └ 実行順序の可視化(図解) | 未着手 | [features/02-execution-order-diagram.md](features/02-execution-order-diagram.md) |
 | 1'' | └ 構文ツリー/AST表示 | 未着手 | [features/03-ast-tree-view.md](features/03-ast-tree-view.md) |
 | 2 | トランザクション・ロックのstep-by-step可視化 | 未着手 | [features/04-transaction-lock-stepper.md](features/04-transaction-lock-stepper.md) |
@@ -74,9 +74,9 @@ docker compose down            # 停止
 
 機能に閉じない、複数機能・アプリ全体にまたがる課題。詳細は各リンク先を参照。
 
-- [ ] [features/01-sql-step-visualization.md](features/01-sql-step-visualization.md) — テーブル結果表示エリアの左右分割スクロールテリング化(仕様決定済み・実装待ち)
+- [x] [features/01-sql-step-visualization.md](features/01-sql-step-visualization.md) — テーブル結果表示エリアの左右分割スクロールテリング化(2026-08-31実装済み。モバイル/狭幅時のフォールバックのみ未着手)
 - [ ] [frontend/core.md](frontend/core.md#オープン課題-カラーとuiライブラリ) — カラー/UIライブラリの方向性決定
 - [ ] [backend/core.md](backend/core.md#オープン課題-テーブル設計のマスタ化) — `prefectures` / `categories` マスタテーブル化の要否判断
 - [ ] [backend/core.md](backend/core.md#オープン課題-公開ホスティングに向けたサンドボックス化) — 公開ホスティング時のサンドボックス設計(セッション分離・危険文禁止・レート制限)
 - [ ] ユーザー自身のDB/スキーマ接続対応
-- [ ] [features/01-sql-step-visualization.md](features/01-sql-step-visualization.md#5-sql構文カバレッジ現状とロードマップ) — SQL構文カバレッジの拡大(CTE・サブクエリ・ウィンドウ関数・UNION系・DML・DDL、フェーズ分けしたロードマップ)
+- [ ] [features/01-sql-step-visualization.md](features/01-sql-step-visualization.md#5-sql構文カバレッジ現状とロードマップ) — SQL構文カバレッジの拡大(フェーズ分けしたロードマップ。Phase A: CTE・サブクエリ・ウィンドウ関数・UNION系は2026-09-05実装済み。残りはPhase B: DML、Phase C: DDL)

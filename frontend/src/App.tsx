@@ -14,6 +14,22 @@ const SAMPLE_QUERIES: { title: string; sql: string }[] = [
     title: "GROUP BY + HAVING",
     sql: "SELECT c.prefecture, COUNT(*) AS order_count\nFROM orders o\nJOIN customers c ON o.customer_id = c.customer_id\nWHERE o.status = '完了'\nGROUP BY c.prefecture\nHAVING COUNT(*) > 1\nORDER BY order_count DESC;",
   },
+  {
+    title: "CTE(WITH句)",
+    sql: "WITH completed_orders AS (\n  SELECT customer_id, order_date\n  FROM orders\n  WHERE status = '完了'\n)\nSELECT c.name, co.order_date\nFROM completed_orders co\nJOIN customers c ON co.customer_id = c.customer_id\nORDER BY co.order_date;",
+  },
+  {
+    title: "サブクエリ",
+    sql: "SELECT\n  c.name,\n  (SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.customer_id) AS order_count\nFROM customers c\nWHERE c.customer_id IN (SELECT customer_id FROM orders WHERE status = '完了')\nORDER BY order_count DESC;",
+  },
+  {
+    title: "ウィンドウ関数",
+    sql: "SELECT\n  customer_id,\n  order_date,\n  RANK() OVER (PARTITION BY customer_id ORDER BY order_date) AS order_rank\nFROM orders\nWHERE status = '完了'\nORDER BY customer_id, order_rank;",
+  },
+  {
+    title: "UNION",
+    sql: "SELECT name, prefecture FROM customers WHERE prefecture = '東京都'\nUNION\nSELECT name, prefecture FROM customers WHERE prefecture = '大阪府'\nORDER BY name;",
+  },
 ];
 
 const SOURCE_TABLES_DEBOUNCE_MS = 500;

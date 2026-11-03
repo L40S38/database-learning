@@ -7,6 +7,7 @@ from app.sql_steps import (
     _parse_select_statement,
     _preview_table_query,
     parse_to_steps,
+    preview_source_tables,
 )
 
 
@@ -147,6 +148,12 @@ def test_extract_from_sources_derived_table_classified_as_subquery():
     assert _from_sources(sql) == [("subquery", None, "sub")]
 
 
+def test_extract_from_sources_schema_qualified_name_is_not_cte():
+    # スキーマ付きの参照は、同名のCTEがあっても実テーブルを指す
+    sql = "WITH orders AS (SELECT * FROM public.orders WHERE false) SELECT * FROM public.orders"
+    assert _from_sources(sql) == [("table", "orders", None)]
+
+
 def test_highlight_columns_join_where_group_by_having_order_by():
     sql = """
         SELECT c.prefecture, COUNT(*) AS order_count
@@ -183,6 +190,72 @@ def test_preview_table_query_escapes_embedded_quote_in_identifier():
     # 2つ並べてエスケープした形で)組み立てられることを確認する
     query = _preview_table_query('weird"table').as_string(None)
     assert query == 'SELECT * FROM "weird""table" LIMIT %s'
+
+
+class _RecordingCursor:
+    """preview_source_tablesが発行するSQLとパラメーターを記録する、DB接続不要の代用品"""
+
+    description = ()
+
+    def __init__(self, calls: list) -> None:
+        self._calls = calls
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc) -> bool:
+        return False
+
+    def execute(self, query, params=None) -> None:
+        self._calls.append((query, params))
+
+    def fetchall(self) -> list:
+        return []
+
+
+class _RecordingConnection:
+    def __init__(self) -> None:
+        self.calls: list = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc) -> bool:
+        return False
+
+    def cursor(self) -> _RecordingCursor:
+        return _RecordingCursor(self.calls)
+
+
+@pytest.fixture
+def recording_connection(monkeypatch) -> _RecordingConnection:
+    conn = _RecordingConnection()
+    monkeypatch.setattr("app.sql_steps.get_connection", lambda: conn)
+    return conn
+
+
+def test_preview_passes_no_params_for_generated_cte_and_subquery_sql(recording_connection):
+    # 空のタプルを渡すと、psycopgがLIKEの`%`をプレースホルダーとして解析して失敗する
+    # (`%`の直後が日本語の場合はUnicodeDecodeErrorになる)ため、Noneを渡す
+    preview_source_tables("""
+        WITH t AS (SELECT * FROM customers WHERE name LIKE '%子')
+        SELECT * FROM t
+        JOIN (SELECT * FROM orders WHERE status LIKE '完%') AS o ON t.customer_id = o.customer_id
+        JOIN products p ON true
+    """)
+    params = [p for _query, p in recording_connection.calls]
+    assert params[:2] == [None, None]
+    assert params[2] is not None
+
+
+def test_preview_of_derived_table_with_own_with_clause_keeps_outer_cte(recording_connection):
+    preview_source_tables("""
+        WITH a AS (SELECT customer_id FROM customers)
+        SELECT * FROM (WITH b AS (SELECT * FROM a) SELECT * FROM b) AS sub
+    """)
+    [(query, _params)] = recording_connection.calls
+    assert "WITH a AS" in query
+    assert "WITH b AS" in query
 
 
 # --- CTE(WITH句) ---------------------------------------------------------
@@ -295,6 +368,35 @@ def test_window_function_inside_subquery_does_not_trigger_top_level_window_step(
     assert "WINDOW" not in _labels(sql)
 
 
+def test_window_function_is_not_evaluated_before_window_step():
+    # ウィンドウ関数はHAVINGの後に評価されるため、GROUP BY/HAVINGステップには含めない
+    sql = """
+        SELECT customer_id, COUNT(*) OVER () AS groups
+        FROM orders
+        GROUP BY customer_id
+        HAVING COUNT(*) > 1
+    """
+    sqls = _sql_by_label(sql)
+    assert "OVER" not in sqls["GROUP BY"]
+    assert "OVER" not in sqls["HAVING"]
+    assert "OVER" in sqls["WINDOW"]
+
+
+def test_group_by_step_falls_back_to_group_columns_when_all_targets_are_windows():
+    sql = "SELECT COUNT(*) OVER () AS groups FROM orders GROUP BY customer_id"
+    sqls = _sql_by_label(sql)
+    assert sqls["GROUP BY"] == "SELECT customer_id FROM orders GROUP BY customer_id"
+
+
+def test_window_step_includes_window_function_only_in_order_by():
+    sql = "SELECT name FROM customers ORDER BY ROW_NUMBER() OVER (PARTITION BY prefecture ORDER BY customer_id)"
+    sqls = _sql_by_label(sql)
+    highlights = _highlights_by_label(sql)
+    assert "OVER" in sqls["WINDOW"]
+    assert "OVER" not in sqls["SELECT"]
+    assert highlights["WINDOW"] == ["prefecture", "customer_id"]
+
+
 # --- UNION / INTERSECT / EXCEPT --------------------------------------------
 
 
@@ -337,6 +439,21 @@ def test_union_arm_sql_is_independently_executable():
     sqls = _sql_by_label(sql)
     assert "customers" in sqls["1つ目のSELECT"]
     assert "orders" in sqls["2つ目のSELECT"]
+
+
+def test_union_arm_with_own_with_clause_keeps_outer_cte_scope():
+    # 枝自身のWITH句(b)が外側のCTE(a)を参照していても、枝を単独実行できること
+    sql = """
+        WITH a AS (SELECT customer_id FROM customers)
+        (WITH b AS (SELECT * FROM a) SELECT * FROM b)
+        UNION
+        SELECT customer_id FROM a
+    """
+    sqls = _sql_by_label(sql)
+    assert sqls["1つ目のSELECT"] == (
+        "WITH a AS (SELECT customer_id FROM customers) "
+        "SELECT * FROM (WITH b AS (SELECT * FROM a) SELECT * FROM b) AS arm"
+    )
 
 
 def test_union_with_cte_propagates_with_clause_to_arms():

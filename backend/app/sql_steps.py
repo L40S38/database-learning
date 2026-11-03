@@ -21,6 +21,7 @@ import psycopg
 from pglast import parse_sql
 from pglast.ast import (
     A_Star,
+    Alias,
     ColumnRef,
     JoinExpr,
     RangeSubselect,
@@ -197,6 +198,34 @@ def _cte_names(stmt: SelectStmt) -> frozenset[str]:
     return frozenset(cte.ctename for cte in stmt.withClause.ctes)
 
 
+def _targets_without_window(select: SelectStmt) -> tuple[ResTarget, ...]:
+    """GROUP BY/HAVINGステップ用の出力列として、ウィンドウ関数を含む列を除いたSELECT句を返す。
+
+    ウィンドウ関数はHAVINGの後に評価されるため、それより前のステップに含めると
+    評価順序を誤って見せることになる(HAVINGで絞り込む前のグループ数で計算した
+    値が一度表示される等)。すべての列がウィンドウ関数だった場合は、代わりに
+    GROUP BYの列(列参照のもの)を出力し、それも無ければ元のSELECT句のままとする。
+    """
+    targets = tuple(t for t in select.targetList if not _has_window_function(t))
+    if targets:
+        return targets
+    group_columns = tuple(
+        ResTarget(val=expr) for expr in (select.groupClause or ()) if isinstance(expr, ColumnRef)
+    )
+    return group_columns or select.targetList
+
+
+def _window_targets(select: SelectStmt) -> tuple[ResTarget, ...]:
+    """WINDOWステップ用の出力列として、SELECT句にORDER BY句にだけ現れる
+    ウィンドウ関数を一時的な列として加えたものを返す(加えないと、ORDER BYの
+    ステップまでウィンドウ関数の評価結果が見えなくなるため)。
+    """
+    sort_windows = tuple(
+        ResTarget(val=sort.node) for sort in (select.sortClause or ()) if _has_window_function(sort)
+    )
+    return (*select.targetList, *sort_windows)
+
+
 def _build_step_nodes(select: SelectStmt) -> list[tuple[str, str, SelectStmt, list[str]]]:
     """(ラベル, 説明, そのステップまでを表すSelectStmt, ハイライトすべき列名) の
     リストを組み立てる(UNION等を伴わない、単一SELECT文の場合)。
@@ -253,7 +282,7 @@ def _build_step_nodes(select: SelectStmt) -> list[tuple[str, str, SelectStmt, li
             "GROUP BY",
             "指定した列の値でグループ化し、集約関数を計算します",
             SelectStmt(
-                targetList=select.targetList,
+                targetList=_targets_without_window(select),
                 fromClause=select.fromClause,
                 whereClause=select.whereClause,
                 groupClause=select.groupClause,
@@ -267,7 +296,7 @@ def _build_step_nodes(select: SelectStmt) -> list[tuple[str, str, SelectStmt, li
             "HAVING",
             "グループ化した結果をさらに条件で絞り込みます",
             SelectStmt(
-                targetList=select.targetList,
+                targetList=_targets_without_window(select),
                 fromClause=select.fromClause,
                 whereClause=select.whereClause,
                 groupClause=select.groupClause,
@@ -283,14 +312,14 @@ def _build_step_nodes(select: SelectStmt) -> list[tuple[str, str, SelectStmt, li
             "WINDOW",
             "ウィンドウ関数(OVER句)を計算します。行を集約せず、各行についてパーティション内の順位・累計などを算出します",
             SelectStmt(
-                targetList=select.targetList,
+                targetList=_window_targets(select),
                 fromClause=select.fromClause,
                 whereClause=select.whereClause,
                 groupClause=select.groupClause,
                 havingClause=select.havingClause,
                 withClause=with_clause,
             ),
-            _window_highlight_columns(select.targetList),
+            _window_highlight_columns((*select.targetList, *(select.sortClause or ()))),
         ))
 
     is_distinct = select.distinctClause is not None
@@ -356,12 +385,22 @@ _SETOP_DESCRIPTIONS_ALL = {
 
 
 def _standalone_arm(arm: SelectStmt, with_clause: Any) -> SelectStmt:
-    """UNION等の片側(larg/rarg)を、単独実行してもCTE名が解決できるように
-    トップレベルのWITH句を付与する(片側が独自にWITH句を持つ場合はそちらを優先する)。
+    """UNION等の片側(larg/rarg)やFROM句内の派生テーブルを、単独実行しても
+    CTE名が解決できるようにトップレベルのWITH句を付与する。
+
+    片側が独自にWITH句を持つ場合は、その中から外側のCTEも参照できるよう、
+    片側を丸ごと派生テーブルにして外側のWITH句で包む(WITH句を付け替える
+    だけだと、外側のCTEの定義が失われてしまうため)。
     """
-    if arm.withClause is not None or with_clause is None:
+    if with_clause is None:
         return arm
-    return _clone_with(arm, withClause=with_clause)
+    if arm.withClause is None:
+        return _clone_with(arm, withClause=with_clause)
+    return SelectStmt(
+        targetList=_star_target_list(),
+        fromClause=(RangeSubselect(subquery=arm, alias=Alias(aliasname="arm")),),
+        withClause=with_clause,
+    )
 
 
 def _build_setop_step_nodes(stmt: SelectStmt) -> list[tuple[str, str, SelectStmt, list[str]]]:
@@ -468,7 +507,8 @@ def _extract_from_sources(from_clause: tuple, cte_names: frozenset[str]) -> list
     def walk(node: object) -> None:
         if isinstance(node, RangeVar):
             alias = node.alias.aliasname if node.alias is not None else None
-            if node.relname in cte_names:
+            # スキーマ付きの参照(public.orders等)はCTEを指さない(PostgreSQLの名前解決と同じ)
+            if node.schemaname is None and node.relname in cte_names:
                 sources.append(_FromSource(kind="cte", alias=alias, relname=node.relname))
             else:
                 sources.append(_FromSource(kind="table", alias=alias, relname=node.relname))
@@ -529,7 +569,7 @@ def preview_source_tables(sql: str) -> tuple[list[TablePreview], list[str]]:
             if source.kind == "table":
                 label, alias = source.relname, source.alias
                 preview_sql: Composed | str = _preview_table_query(source.relname)
-                params: tuple = (MAX_PREVIEW_ROWS,)
+                params: tuple | None = (MAX_PREVIEW_ROWS,)
             elif source.kind == "cte":
                 label, alias = source.relname, source.alias
                 inner = SelectStmt(
@@ -538,12 +578,14 @@ def preview_source_tables(sql: str) -> tuple[list[TablePreview], list[str]]:
                     withClause=stmt.withClause,
                 )
                 preview_sql = f"SELECT * FROM ({_deparse(inner)}) AS step_preview LIMIT {MAX_PREVIEW_ROWS}"
-                params = ()
+                # 生成したSQLにプレースホルダーは無いのでNoneを渡す(空のタプルでも
+                # psycopgはSQL中の`%`(LIKE 'A%'等)をプレースホルダーとして解析してしまう)
+                params = None
             else:
                 label, alias = source.alias or "(サブクエリ)", source.alias
                 inner = _standalone_arm(source.subquery, stmt.withClause)
                 preview_sql = f"SELECT * FROM ({_deparse(inner)}) AS step_preview LIMIT {MAX_PREVIEW_ROWS}"
-                params = ()
+                params = None
 
             try:
                 with conn.cursor() as cur:

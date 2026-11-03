@@ -173,6 +173,63 @@ def _window_highlight_columns(node: Any) -> list[str]:
     return finder.names
 
 
+class _WindowInputColumnFinder(Visitor):
+    """トップレベルのウィンドウ関数呼び出しについて、`OVER`句のPARTITION BY/
+    ORDER BYに(式の一部ではなく)そのまま書かれている列参照を出現順に集める。
+
+    そのまま書かれた列参照は、同じ階層のSELECT句にもそのまま書ける(GROUP BYが
+    ある場合も、ウィンドウ関数とSELECT句は同じ規則で検査される)ため、WINDOW
+    ステップで一時的な列として表示できる。
+    """
+
+    def __init__(self) -> None:
+        self.columns: list[ColumnRef] = []
+
+    def visit_SelectStmt(self, ancestors, node):  # noqa: N802 (pglastの命名規則に合わせる)
+        return Skip
+
+    def visit_FuncCall(self, ancestors, node):  # noqa: N802 (pglastの命名規則に合わせる)
+        if node.over is None:
+            return
+        exprs = (
+            *(node.over.partitionClause or ()),
+            *(sort.node for sort in (node.over.orderClause or ())),
+        )
+        for expr in exprs:
+            if isinstance(expr, ColumnRef) and not isinstance(expr.fields[-1], A_Star):
+                self.columns.append(expr)
+
+
+def _window_input_targets(select: SelectStmt) -> tuple[ResTarget, ...]:
+    """WINDOWステップで一時的に表示する入力列(`OVER`句のPARTITION BY/ORDER BYに
+    そのまま書かれている列のうち、SELECT句に無いもの)を返す。
+
+    SELECT句に無い列は結果に現れず、ハイライトしても何も光らないため、
+    WINDOWステップでだけ結果に含めて「どの列で区切り・並べたか」を見せる
+    (続くSELECTステップで取り除かれる)。SELECT句に`*`がある場合は、
+    すでにすべての列が結果に含まれるので何も足さない。
+    """
+    selected: set[str] = set()
+    for target in select.targetList:
+        if target.name:
+            selected.add(target.name)
+        elif isinstance(target.val, ColumnRef):
+            last_field = target.val.fields[-1]
+            if isinstance(last_field, A_Star):
+                return ()
+            selected.add(last_field.sval)
+
+    finder = _WindowInputColumnFinder()
+    finder((*select.targetList, *(select.sortClause or ())))
+    targets: list[ResTarget] = []
+    for column in finder.columns:
+        name = column.fields[-1].sval
+        if name not in selected:
+            selected.add(name)
+            targets.append(ResTarget(val=column))
+    return tuple(targets)
+
+
 def _star_target_list() -> tuple[ResTarget, ...]:
     return (ResTarget(val=ColumnRef(fields=(A_Star(),))),)
 
@@ -216,14 +273,15 @@ def _targets_without_window(select: SelectStmt) -> tuple[ResTarget, ...]:
 
 
 def _window_targets(select: SelectStmt) -> tuple[ResTarget, ...]:
-    """WINDOWステップ用の出力列として、SELECT句にORDER BY句にだけ現れる
-    ウィンドウ関数を一時的な列として加えたものを返す(加えないと、ORDER BYの
-    ステップまでウィンドウ関数の評価結果が見えなくなるため)。
+    """WINDOWステップ用の出力列を返す。SELECT句の前にウィンドウ関数の入力列
+    (`_window_input_targets`)を、後ろにORDER BY句にだけ現れるウィンドウ関数を、
+    それぞれ一時的な列として加える(後者を加えないと、ORDER BYのステップまで
+    ウィンドウ関数の評価結果が見えなくなるため)。
     """
     sort_windows = tuple(
         ResTarget(val=sort.node) for sort in (select.sortClause or ()) if _has_window_function(sort)
     )
-    return (*select.targetList, *sort_windows)
+    return (*_window_input_targets(select), *select.targetList, *sort_windows)
 
 
 def _build_step_nodes(select: SelectStmt) -> list[tuple[str, str, SelectStmt, list[str]]]:

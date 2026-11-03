@@ -54,6 +54,7 @@ FROM句が参照する実テーブルを再帰的に特定し(自己結合・多
 | WHERE | WHERE条件式で参照されている列 |
 | GROUP BY | グルーピング対象列 |
 | HAVING | HAVING条件式で参照されている列(`COUNT(*)`のように列を直接参照しない場合は対象なし) |
+| WINDOW | `OVER`句のPARTITION BY/ORDER BYで参照されている列(SELECT句に無い列も、このステップでだけ表示してハイライト) |
 | ORDER BY | 並び替え対象列(SELECTのエイリアス指定も可) |
 | SELECT / LIMIT・OFFSET | ハイライトなし |
 
@@ -162,7 +163,7 @@ GROUP BY / ORDER BY / LIMIT・OFFSET のアニメーションイメージは未�
 
 - [x] CTE(WITH句) — 非再帰のみ対応(`WITH RECURSIVE`は明示的に未対応エラー)。ステップ0では、スキーマ付きの参照(`public.orders`等)は同名のCTEがあっても実テーブルとして扱う(PostgreSQLの名前解決と同じ)。各CTEの結果を計算する「WITH `<name>`」ステップを、FROM/JOINより前に(複数あれば定義順に)追加する。CTE本体自体はさらに句分解せず、「計算済みの1つの結果」として1ステップで見せる。以降の各ステップのSQLには、CTE名を解決できるよう元のWITH句をそのまま付与して単独実行可能にしている。実装: `backend/app/sql_steps.py` の `_build_step_nodes`(CTE部分)・`_clone_with`
 - [x] サブクエリ — スカラサブクエリ・`IN`/`EXISTS`は、既存の句分解モデルにそのまま乗る(WHERE/SELECT等の一部として丸ごと実行されるため、追加のモデル変更は不要だった)。FROM句内の派生テーブルは、CTEと同様「計算済みの1つの結果」としてステップ0(実行前)のプレビュー対象に追加した。ハイライト列抽出(`_referenced_column_names`)は、サブクエリ内部で参照されている列を外側の句のハイライト対象に含めないよう、ネストしたSelectStmtの手前で探索を打ち切るよう修正した(`pglast.visitors.Skip`)。実装: `backend/app/sql_steps.py` の `_extract_from_sources`・`_ColumnNameFinder`
-- [x] ウィンドウ関数 — GROUP BY/HAVINGの後・DISTINCT/ORDER BYの前に新しい「WINDOW」ステップを追加。ハイライト列は`OVER`句のPARTITION BY/ORDER BYで参照されている列。ウィンドウ関数はHAVINGの後に評価されるため、GROUP BY/HAVINGステップではウィンドウ関数を含む列をSELECT句から除いて実行し、WINDOWステップで初めて追加する(すべての列がウィンドウ関数の場合は、GROUP BYの列で代用する)。ORDER BY句にだけ現れるウィンドウ関数も、WINDOWステップでは一時的な列として追加する。名前付き`WINDOW`句(`WINDOW w AS (...)` + `OVER w`)は、参照解決が別途必要になるためスコープ外のまま(明示的に未対応エラー)。DISTINCTを伴わない場合、WINDOWステップとSELECTステップの表示内容が一致することがある(評価順序上ここでは何も変化しないため。仕様通りの挙動)。実装: `backend/app/sql_steps.py` の `_WindowColumnFinder`・`_build_step_nodes`(WINDOW部分)
+- [x] ウィンドウ関数 — GROUP BY/HAVINGの後・DISTINCT/ORDER BYの前に新しい「WINDOW」ステップを追加。ハイライト列は`OVER`句のPARTITION BY/ORDER BYで参照されている列。ウィンドウ関数はHAVINGの後に評価されるため、GROUP BY/HAVINGステップではウィンドウ関数を含む列をSELECT句から除いて実行し、WINDOWステップで初めて追加する(すべての列がウィンドウ関数の場合は、GROUP BYの列で代用する)。ORDER BY句にだけ現れるウィンドウ関数も、WINDOWステップでは一時的な列として追加する。名前付き`WINDOW`句(`WINDOW w AS (...)` + `OVER w`)は、参照解決が別途必要になるためスコープ外のまま(明示的に未対応エラー)。`OVER`句のPARTITION BY/ORDER BYにそのまま書かれた列のうちSELECT句に無いものは、ハイライトしても結果に現れず光らないため、WINDOWステップでだけ一時的な列として表示する(続くSELECTステップで取り除かれる。SELECT句に`*`がある場合や、`date_trunc(...)`のような式の一部として書かれた列は対象外)。実装: `backend/app/sql_steps.py` の `_WindowColumnFinder`・`_build_step_nodes`(WINDOW部分)
 - [x] UNION / INTERSECT / EXCEPT — 2項のみ対応(3つ以上の連結は明示的に未対応エラー)。左右それぞれの枝を句分解せず「1つ目のSELECT」「2つ目のSELECT」として丸ごと実行し、続けて`UNION`/`UNION ALL`/`INTERSECT`/`EXCEPT`(必要に応じ` ALL`)の結合ステップ、トップレベルのORDER BY/LIMITがあればそれぞれ追加する。CTEと組み合わせた場合、両方の枝にWITH句を伝播する。枝が独自にWITH句を持つ場合は、枝を派生テーブルにして外側のWITH句で包み、枝の中からも外側のCTEを参照できるようにする(FROM句内の派生テーブルをステップ0でプレビューする場合も同様)。実装: `backend/app/sql_steps.py` の `_build_setop_step_nodes`
 
 **実装メモ(2026-09-05)**: CTE本体・UNIONの各枝・FROM句内の派生テーブルは、いずれも「それ自体をさらに句ごとに分解する」のではなく「計算済みの1つの結果」を返す1ステップとして扱う設計にした。この可視化の粒度は常に「トップレベルの1つのSELECT文」を単位とする、という一貫した方針。フロントエンドは既存のステップ配列を汎用的にレンダリングする作りだったため、これらの新しいステップ種別(WITH `<name>`・WINDOW・1つ目/2つ目のSELECT・UNION等)を追加しても`frontend/`側の変更は不要だった。
@@ -193,5 +194,5 @@ SELECTの「句ごとの分解」モデルはそのまま使えず、文ごと�
 
 ## 6. テスト・検証
 
-- バックエンド単体テスト: `backend/tests/test_sql_steps.py`(pytest、50件、DB接続不要)。句分解・列名抽出・ハイライト抽出のロジックに加え、CTE・サブクエリ・ウィンドウ関数・UNION系(5節Phase A)のステップ分解・SQL組み立て・ハイライトも検証(2026-09-05追加、26件)。
+- バックエンド単体テスト: `backend/tests/test_sql_steps.py`(pytest、53件、DB接続不要)。句分解・列名抽出・ハイライト抽出のロジックに加え、CTE・サブクエリ・ウィンドウ関数・UNION系(5節Phase A)のステップ分解・SQL組み立て・ハイライトも検証(2026-09-05追加、26件)。
 - 手動/自動での動作確認: Docker Compose起動 + Playwrightでのブラウザ操作(サンプルクエリ実行、ステップ遷移、コンソールエラーなし)を都度実施。5節Phase Aの各構文(CTE・サブクエリ・ウィンドウ関数・UNION/INTERSECT/EXCEPT・エラーケースとして再帰CTE/3項UNION)は、2026-09-05にDocker Compose上の実PostgreSQLに対してAPI経由で動作確認済み。

@@ -397,6 +397,33 @@ def test_window_step_includes_window_function_only_in_order_by():
     assert highlights["WINDOW"] == ["prefecture", "customer_id"]
 
 
+def test_window_step_shows_partition_and_order_columns_missing_from_select():
+    # ハイライト対象の列がSELECT句に無いと何も光らないため、WINDOWステップでだけ表示する
+    sql = "SELECT RANK() OVER (PARTITION BY customer_id ORDER BY order_date) AS r FROM orders"
+    sqls = _sql_by_label(sql)
+    assert sqls["WINDOW"] == (
+        "SELECT customer_id, order_date, rank() OVER (PARTITION BY customer_id ORDER BY order_date) AS r "
+        "FROM orders"
+    )
+    assert sqls["SELECT"] == "SELECT rank() OVER (PARTITION BY customer_id ORDER BY order_date) AS r FROM orders"
+
+
+def test_window_step_does_not_repeat_selected_columns_or_add_expressions():
+    sql = """
+        SELECT customer_id,
+               RANK() OVER (PARTITION BY customer_id ORDER BY date_trunc('month', order_date)) AS r
+        FROM orders
+    """
+    sqls = _sql_by_label(sql)
+    assert sqls["WINDOW"] == sqls["SELECT"]
+
+
+def test_window_step_adds_no_input_columns_when_selecting_star():
+    sql = "SELECT *, RANK() OVER (PARTITION BY customer_id ORDER BY order_date) AS r FROM orders"
+    sqls = _sql_by_label(sql)
+    assert sqls["WINDOW"] == sqls["SELECT"]
+
+
 # --- UNION / INTERSECT / EXCEPT --------------------------------------------
 
 
